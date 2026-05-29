@@ -26,6 +26,15 @@ const Navigation = ({ activeTab, setActiveTab, studentCount }) => {
           <span className="nav-dot" />
           Call History
         </button>
+
+        {/* NAYA: App Users Tab */}
+        <button
+          className={`nav-button ${activeTab === 'users' ? 'active' : ''}`}
+          onClick={() => setActiveTab('users')}
+        >
+          <span className="nav-dot" />
+          App Users
+        </button>
       </nav>
 
       <div className="sidebar-footer">

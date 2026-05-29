@@ -7,8 +7,10 @@ import {
   orderBy,
   addDoc,
   deleteDoc,
+  updateDoc,
   doc,
   serverTimestamp,
+  writeBatch
 } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
@@ -16,6 +18,7 @@ import './Dashboard.css';
 
 import Navigation from './Navigation';
 import History from './History';
+import Users from './Users';
 
 const Dashboard = () => {
   // === STATES ===
@@ -26,19 +29,27 @@ const Dashboard = () => {
   // Theme State
   const [theme, setTheme] = useState('light');
 
-  // Form & Upload State
-  const [formData, setFormData] = useState({ name: '', phone: '', dob: '', batch: '', standard: '' });
+  // Form State
+  const [formData, setFormData] = useState({ name: '', phone: '', dob: '', batch: '', standard: '', city: '' });
   const [isUploading, setIsUploading] = useState(false);
 
   // Search, Filter, Sort & Pagination States
   const [search, setSearch] = useState('');
-  const [filterStatus, setFilterStatus] = useState('All'); // All, Pending, Completed
-  const [sortBy, setSortBy] = useState('nameAsc'); // nameAsc, nameDesc, newFirst
+  const [filterStatus, setFilterStatus] = useState('All'); 
+  const [sortBy, setSortBy] = useState('nameAsc'); 
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 15; // Ek page par 15 students dikhenge
+  const itemsPerPage = 15;
 
-  // Bulk Actions State
   const [selectedStudents, setSelectedStudents] = useState([]);
+
+  // === Edit Profile States ===
+  const [editingStudent, setEditingStudent] = useState(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [editPhotoFile, setEditPhotoFile] = useState(null);
+
+  // === Assign Calls State ===
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  const [assignData, setAssignData] = useState({ eventTitle: 'Daily Follow-up', callerEmail: '', callerName: '' });
 
   // === FIREBASE FETCH ===
   useEffect(() => {
@@ -58,7 +69,6 @@ const Dashboard = () => {
     };
   }, []);
 
-  // === HANDLERS ===
   const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light');
 
   const handleAddStudent = async (e) => {
@@ -72,7 +82,7 @@ const Dashboard = () => {
         isCallDone: false,
         createdAt: serverTimestamp(),
       });
-      setFormData({ name: '', phone: '', dob: '', batch: '', standard: '' });
+      setFormData({ name: '', phone: '', dob: '', batch: '', standard: '', city: '' });
     } catch (err) {
       alert('Error: ' + err.message);
     }
@@ -97,6 +107,7 @@ const Dashboard = () => {
           const dob = row.DOB || row.dob || row.Dob || '';
           const batch = row.Batch || row.batch || row.BATCH || '';
           const standard = row.Standard || row.standard || row.Std || row.STANDARD || '';
+          const city = row.City || row.city || row.CITY || '';
 
           if (name && phone) {
             await addDoc(collection(db, 'students'), {
@@ -105,6 +116,7 @@ const Dashboard = () => {
               dob: String(dob),
               batch: String(batch),
               standard: String(standard),
+              city: String(city),
               isCallDone: false,
               createdAt: serverTimestamp(),
             });
@@ -138,9 +150,106 @@ const Dashboard = () => {
     }
   };
 
-  // === DATA PROCESSING (Filters, Sort, Pagination) ===
+  // === Handle Bulk Assign ===
+  const handleAssignCalls = async (e) => {
+    e.preventDefault();
+    if (!assignData.callerEmail || !assignData.callerName) {
+      return alert("Caller ka Email aur Name dono zaroori hain!");
+    }
+
+    try {
+      const batch = writeBatch(db);
+      const selectedDocs = allStudents.filter(s => selectedStudents.includes(s.id));
+
+      selectedDocs.forEach(student => {
+        const docRef = doc(collection(db, 'event_assignments'));
+        batch.set(docRef, {
+          eventId: 'direct_assign_' + Date.now(),
+          eventTitle: assignData.eventTitle,
+          callerEmail: assignData.callerEmail.trim().toLowerCase(),
+          callerName: assignData.callerName,
+          studentId: student.id,
+          studentName: student.name || 'Unknown',
+          studentPhone: student.phone || '',
+          batch: student.batch || '',
+          isCallDone: false,
+          feedback: '',
+          assignedAt: serverTimestamp(),
+        });
+      });
+
+      await batch.commit();
+      alert(`Success! ${selectedDocs.length} calls successfully assigned to ${assignData.callerName}.`);
+      setIsAssignModalOpen(false);
+      setSelectedStudents([]); 
+      setAssignData({ eventTitle: 'Daily Follow-up', callerEmail: '', callerName: '' });
+    } catch (err) {
+      alert("Assignment error: " + err.message);
+    }
+  };
+
+  // === Photo Upload to ImgBB ===
+  const uploadPhotoToImgBB = async (file) => {
+    const form = new FormData();
+    form.append('image', file);
+    
+    // Apni API key use karein
+    const IMGBB_API_KEY = import.meta.env.VITE_IMGBB_API_KEY; 
+    
+    try {
+      const res = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
+        method: 'POST',
+        body: form,
+      });
+      const data = await res.json();
+      if (data.success) {
+        return data.data.url;
+      }
+      return null;
+    } catch (err) {
+      console.error('ImgBB Upload Error:', err);
+      return null;
+    }
+  };
+
+  // === Handle Update Profile ===
+  const handleUpdateStudent = async (e) => {
+    e.preventDefault();
+    setIsUpdating(true);
+    try {
+      let finalPhotoUrl = editingStudent.photoUrl || '';
+      
+      if (editPhotoFile) {
+        const uploadedUrl = await uploadPhotoToImgBB(editPhotoFile);
+        if (uploadedUrl) {
+          finalPhotoUrl = uploadedUrl;
+        } else {
+          alert("Photo upload fail ho gayi. Baaki details save ho jayengi.");
+        }
+      }
+
+      const studentRef = doc(db, 'students', editingStudent.id);
+      await updateDoc(studentRef, {
+        name: editingStudent.name,
+        phone: editingStudent.phone,
+        dob: editingStudent.dob,
+        batch: editingStudent.batch,
+        standard: editingStudent.standard,
+        city: editingStudent.city,
+        photoUrl: finalPhotoUrl
+      });
+      
+      setEditingStudent(null);
+      setEditPhotoFile(null);
+    } catch (err) {
+      alert('Error updating student: ' + err.message);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // === DATA PROCESSING ===
   let processedList = allStudents.filter((s) => (s.name || '').toLowerCase().includes(search.toLowerCase()));
-  
   if (filterStatus === 'Pending') processedList = processedList.filter(s => !s.isCallDone);
   if (filterStatus === 'Completed') processedList = processedList.filter(s => s.isCallDone);
 
@@ -171,7 +280,6 @@ const Dashboard = () => {
     if (student.isCallDone) acc[batch].Completed += 1;
     return acc;
   }, {});
-  
   const batchChartData = Object.values(batchStats);
   const pieData = [
     { name: 'Completed Calls', value: completedCount, color: '#12B76A' },
@@ -184,102 +292,94 @@ const Dashboard = () => {
         <Navigation activeTab={activeTab} setActiveTab={setActiveTab} studentCount={allStudents.length} />
 
         <main className="main">
-          {/* Header & Theme Toggle */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '15px' }}>
-            <button className="theme-toggle-btn" onClick={toggleTheme}>
-              {theme === 'light' ? '🌙 Dark Mode' : '☀️ Light Mode'}
-            </button>
-          </div>
-
-          <section className="hero">
-            <div className="hero-content">
-              <div>
-                <div className="eyebrow">Enterprise CRM Portal</div>
-                <h1>Manage students and daily calling with clarity.</h1>
-                <p>Add profiles, track pending calls, bulk update data, and review advanced analytics.</p>
-              </div>
-              <div className="live-pill">Firebase Live Sync</div>
+          <header className="page-header">
+            <div>
+              <h1 className="page-title">Enterprise Dashboard</h1>
+              <p className="page-subtitle">Overview of your daily calls, student profiles, and analytics.</p>
             </div>
-          </section>
+            <div className="header-actions">
+              <div className="live-pill"><span className="pulse-dot"></span> Firebase Live</div>
+              <button className="theme-toggle-btn" onClick={toggleTheme}>
+                {theme === 'light' ? '🌙 Dark Mode' : '☀️ Light Mode'}
+              </button>
+            </div>
+          </header>
 
           <section className="stats-grid">
             {statCards.map((card) => (
               <div className={`stat-card tone-${card.tone}`} key={card.label}>
-                <div className="stat-icon">{card.value}</div>
+                <div className="stat-card-header"><div className="stat-icon"></div></div>
                 <div className="stat-value">{card.value}</div>
                 <div className="stat-label">{card.label}</div>
               </div>
             ))}
           </section>
 
-          {activeTab === 'overview' ? (
+          {activeTab === 'overview' && (
             <>
-              {/* Analytics Section */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '22px', marginBottom: '22px' }}>
-                <section className="panel" style={{ marginBottom: 0 }}>
-                  <h3 className="panel-title">Batch Performance</h3>
-                  <div style={{ width: '100%', height: 260, marginTop: '20px' }}>
-                    <ResponsiveContainer>
-                      <BarChart data={batchChartData}>
-                        <XAxis dataKey="name" tick={{fontSize: 12, fill: 'var(--text-muted)'}} axisLine={false} tickLine={false} />
-                        <YAxis tick={{fontSize: 12, fill: 'var(--text-muted)'}} axisLine={false} tickLine={false} />
-                        <Tooltip cursor={{fill: 'rgba(0,0,0,0.05)'}} contentStyle={{borderRadius: '14px', border: 'none', background: 'var(--bg-panel)', color: 'var(--text-main)'}} />
-                        <Legend iconType="circle" wrapperStyle={{fontSize: '12px', fontWeight: 'bold'}} />
-                        <Bar dataKey="Total" fill="#3B82F6" radius={[6, 6, 0, 0]} />
-                        <Bar dataKey="Completed" fill="#10B981" radius={[6, 6, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
+              <div className="content-grid">
+                <section className="panel form-panel">
+                  <div className="panel-header-compact">
+                    <h3 className="panel-title">Add Profile</h3>
+                    <div>
+                      <input type="file" accept=".xlsx, .xls, .csv" id="excel-upload" className="hidden-file-input" onChange={handleFileUpload} />
+                      <label htmlFor="excel-upload" className="upload-label-small">{isUploading ? 'Uploading...' : 'Bulk Upload'}</label>
+                    </div>
                   </div>
+                  
+                  <form className="form-grid-compact" onSubmit={handleAddStudent}>
+                    <div className="field"><label className="label">Name</label><input className="input" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} placeholder="Full name" /></div>
+                    <div className="field"><label className="label">Contact</label><input className="input" value={formData.phone} onChange={(e) => setFormData({...formData, phone: e.target.value})} placeholder="9876543210" /></div>
+                    <div className="field"><label className="label">Birth Date</label><input className="input" type="date" value={formData.dob} onChange={(e) => setFormData({...formData, dob: e.target.value})} /></div>
+                    <div className="field">
+                      <label className="label">Batch</label>
+                      <select className="input" value={formData.batch} onChange={(e) => setFormData({...formData, batch: e.target.value})}>
+                        <option value="">Select</option>
+                        {['2019-20','2020-21','2021-22','2022-23','2023-24','2024-25','2025-26','2026-27'].map(b => <option key={b} value={b}>{b}</option>)}
+                      </select>
+                    </div>
+                    <div className="field"><label className="label">Standard</label><input className="input" value={formData.standard} onChange={(e) => setFormData({...formData, standard: e.target.value})} placeholder="e.g. 10th" /></div>
+                    <div className="field"><label className="label">City (Opt)</label><input className="input" value={formData.city} onChange={(e) => setFormData({...formData, city: e.target.value})} placeholder="e.g. Ahmedabad" /></div>
+                    <button className="primary-button submit-btn-full" type="submit">Save Student Profile</button>
+                  </form>
                 </section>
-                <section className="panel" style={{ marginBottom: 0 }}>
-                  <h3 className="panel-title">Overall Efficiency</h3>
-                  <div style={{ width: '100%', height: 260, marginTop: '20px' }}>
-                    <ResponsiveContainer>
-                      <PieChart>
-                        <Pie data={pieData} innerRadius={70} outerRadius={95} paddingAngle={5} dataKey="value" stroke="none">
-                          {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                        </Pie>
-                        <Tooltip contentStyle={{borderRadius: '14px', border: 'none', background: 'var(--bg-panel)', color: 'var(--text-main)'}} />
-                        <Legend iconType="circle" wrapperStyle={{fontSize: '12px', fontWeight: 'bold'}} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-                </section>
+
+                <div className="charts-row">
+                  <section className="panel chart-panel">
+                    <h3 className="panel-title-small">Batch Performance</h3>
+                    <div className="chart-wrapper">
+                      <ResponsiveContainer>
+                        <BarChart data={batchChartData}>
+                          <XAxis dataKey="name" tick={{fontSize: 10, fill: 'var(--text-muted)'}} axisLine={false} tickLine={false} />
+                          <YAxis width={25} tick={{fontSize: 10, fill: 'var(--text-muted)'}} axisLine={false} tickLine={false} />
+                          <Tooltip cursor={{fill: 'var(--bg-hover)'}} contentStyle={{borderRadius: '8px', border: 'none', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '12px'}} />
+                          <Bar dataKey="Total" fill="#3B82F6" radius={[4, 4, 0, 0]} barSize={15} />
+                          <Bar dataKey="Completed" fill="#10B981" radius={[4, 4, 0, 0]} barSize={15} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </section>
+                  <section className="panel chart-panel">
+                    <h3 className="panel-title-small">Overall Efficiency</h3>
+                    <div className="chart-wrapper">
+                      <ResponsiveContainer>
+                        <PieChart>
+                          <Pie data={pieData} innerRadius={45} outerRadius={65} paddingAngle={5} dataKey="value" stroke="none">
+                            {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                          </Pie>
+                          <Tooltip contentStyle={{borderRadius: '8px', border: 'none', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '12px'}} />
+                          <Legend iconType="circle" wrapperStyle={{fontSize: '11px', fontWeight: 'bold'}} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </section>
+                </div>
               </div>
 
-              {/* Add Student Form */}
-              <section className="panel">
-                <div className="panel-header">
-                  <div>
-                    <h3 className="panel-title">Add Student Profile</h3>
-                    <p className="panel-subtitle">Manual entry ya Excel bulk upload se students add karein.</p>
-                  </div>
-                  <div>
-                    <input type="file" accept=".xlsx, .xls, .csv" id="excel-upload" className="hidden-file-input" onChange={handleFileUpload} />
-                    <label htmlFor="excel-upload" className="upload-label">{isUploading ? 'Uploading...' : 'Bulk Upload Excel'}</label>
-                  </div>
-                </div>
-                <form className="form-grid" onSubmit={handleAddStudent}>
-                  <div className="field"><label className="label">Name</label><input className="input" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} placeholder="Full name" /></div>
-                  <div className="field"><label className="label">Contact</label><input className="input" value={formData.phone} onChange={(e) => setFormData({...formData, phone: e.target.value})} placeholder="9876543210" /></div>
-                  <div className="field"><label className="label">Birth Date</label><input className="input" type="date" value={formData.dob} onChange={(e) => setFormData({...formData, dob: e.target.value})} /></div>
-                  <div className="field">
-                    <label className="label">Batch</label>
-                    <select className="input" value={formData.batch} onChange={(e) => setFormData({...formData, batch: e.target.value})}>
-                      <option value="">Select Batch</option>
-                      {['2019-20','2020-21','2021-22','2022-23','2023-24','2024-25','2025-26','2026-27'].map(b => <option key={b} value={b}>{b}</option>)}
-                    </select>
-                  </div>
-                  <div className="field"><label className="label">Standard</label><input className="input" value={formData.standard} onChange={(e) => setFormData({...formData, standard: e.target.value})} placeholder="e.g. 10th" /></div>
-                  <button className="primary-button" type="submit">Save Profile</button>
-                </form>
-              </section>
-
-              {/* Advanced Toolbar (Search, Filter, Sort) */}
               <div className="advanced-toolbar">
-                <div className="section-label">Directory</div>
+                <div className="section-label">Directory List</div>
                 <div className="toolbar-controls">
-                  <input className="input search-input" placeholder="Search by name" value={search} onChange={(e) => {setSearch(e.target.value); setCurrentPage(1);}} />
+                  <input className="input search-input" placeholder="Search by name..." value={search} onChange={(e) => {setSearch(e.target.value); setCurrentPage(1);}} />
                   <select className="input filter-select" value={filterStatus} onChange={(e) => {setFilterStatus(e.target.value); setCurrentPage(1);}}>
                     <option value="All">All Status</option>
                     <option value="Pending">Pending Calls</option>
@@ -293,18 +393,31 @@ const Dashboard = () => {
                 </div>
               </div>
 
-              {/* Bulk Actions Toolbar */}
               {selectedStudents.length > 0 && (
                 <div className="bulk-toolbar">
                   <span>{selectedStudents.length} Students Selected</span>
-                  <button className="remove-button" onClick={handleBulkDelete}>Delete Selected</button>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button 
+                      className="primary-button" 
+                      style={{ height: '34px', fontSize: '12px', padding: '0 14px', borderRadius: '11px' }} 
+                      onClick={() => setIsAssignModalOpen(true)}
+                    >
+                      👤 Assign Calls
+                    </button>
+                    
+                    <button className="remove-button-bulk" onClick={handleBulkDelete}>
+                      ✕ Delete
+                    </button>
+                  </div>
                 </div>
               )}
 
-              {/* Directory List */}
               <section className="directory-list">
                 {currentItems.length === 0 ? (
-                  <div className="empty-state">No students found.</div>
+                  <div className="empty-state">
+                    <div className="empty-icon">📂</div>
+                    <div className="empty-text">No students found.</div>
+                  </div>
                 ) : (
                   currentItems.map((s) => (
                     <div className="student-row" key={s.id}>
@@ -315,34 +428,185 @@ const Dashboard = () => {
                         onChange={() => toggleSelectStudent(s.id)}
                       />
                       <div className="student-main">
-                        <div className="avatar">{(s.name || 'S').charAt(0).toUpperCase()}</div>
+                        <div 
+                          className={`avatar ${s.isCallDone ? 'avatar-done' : 'avatar-pending'}`}
+                          style={s.photoUrl ? { backgroundImage: `url(${s.photoUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}}
+                        >
+                          {s.photoUrl ? '' : (s.name || 'S').charAt(0).toUpperCase()}
+                        </div>
+                        
                         <div className="student-info">
-                          <div className="student-name">{s.name || 'Unknown'}</div>
-                          <div className="student-dob">{s.dob || 'DOB N/A'} {s.standard ? ` | Std: ${s.standard}` : ''} {s.batch ? ` | Batch: ${s.batch}` : ''}</div>
+                          <div className="student-name">{s.name || 'Unknown Profile'}</div>
+                          <div className="student-details">
+                            {s.dob ? `DOB: ${s.dob}` : 'DOB N/A'} 
+                            {s.standard && <span>{s.standard}</span>}
+                            {s.batch && <span>{s.batch}</span>}
+                            {s.city && <span>{s.city}</span>}
+                          </div>
                         </div>
                       </div>
                       <div className="muted">{s.phone || 'No phone'}</div>
                       <div className={`badge ${s.isCallDone ? 'done' : 'pending'}`}>{s.isCallDone ? 'Completed' : 'Pending'}</div>
-                      <button className="remove-button" onClick={async () => { if (window.confirm('Delete student?')) await deleteDoc(doc(db, 'students', s.id)); }}>Remove</button>
+                      
+                      <div className="action-buttons">
+                        <button 
+                          className="icon-edit-button" 
+                          style={{ background: '#FFF4E5', color: '#F79009' }}
+                          onClick={() => {
+                            // NAYA: URL ke beech mein /#/ add kiya gaya hai
+const link = `${window.location.origin}/call_app/#/update-profile?id=${s.id}`;
+                            navigator.clipboard.writeText(link);
+                            alert('Link copied! Ab aap isko WhatsApp par send kar sakte hain.');
+                          }} 
+                          title="Copy Update Link"
+                        >
+                          🔗
+                        </button>
+                        
+                        <button className="icon-edit-button" onClick={() => setEditingStudent(s)} title="Edit Profile">
+                          ✎
+                        </button>
+                        <button className="icon-delete-button" onClick={async () => { if (window.confirm('Delete student?')) await deleteDoc(doc(db, 'students', s.id)); }} title="Delete">
+                          ✕
+                        </button>
+                      </div>
                     </div>
                   ))
                 )}
               </section>
 
-              {/* Pagination Controls */}
               {totalPages > 1 && (
                 <div className="pagination">
-                  <button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => prev - 1)}>Prev</button>
+                  <button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => prev - 1)}>← Prev</button>
                   <span>Page {currentPage} of {totalPages}</span>
-                  <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(prev => prev + 1)}>Next</button>
+                  <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(prev => prev + 1)}>Next →</button>
                 </div>
               )}
             </>
-          ) : (
-            <History historyLogs={historyLogs} />
           )}
+
+          {activeTab === 'history' && <History historyLogs={historyLogs} />}
+          {activeTab === 'users' && <Users />}
+          
         </main>
       </div>
+
+      {/* === Edit Modal Overlay === */}
+      {editingStudent && (
+        <div className="edit-modal-overlay">
+          <div className="edit-modal">
+            <div className="edit-modal-header">
+              <h2>Edit Profile</h2>
+              <button className="close-modal-btn" onClick={() => { setEditingStudent(null); setEditPhotoFile(null); }}>✕</button>
+            </div>
+
+            <form className="form-grid-compact" onSubmit={handleUpdateStudent}>
+              <div className="field">
+                <label className="label">Name</label>
+                <input className="input" value={editingStudent.name} onChange={(e) => setEditingStudent({...editingStudent, name: e.target.value})} required />
+              </div>
+              <div className="field">
+                <label className="label">Phone</label>
+                <input className="input" value={editingStudent.phone} onChange={(e) => setEditingStudent({...editingStudent, phone: e.target.value})} required />
+              </div>
+              <div className="field">
+                <label className="label">DOB</label>
+                <input className="input" type="date" value={editingStudent.dob} onChange={(e) => setEditingStudent({...editingStudent, dob: e.target.value})} />
+              </div>
+              <div className="field">
+                <label className="label">Batch</label>
+                <select className="input" value={editingStudent.batch} onChange={(e) => setEditingStudent({...editingStudent, batch: e.target.value})}>
+                  <option value="">Select</option>
+                  {['2019-20','2020-21','2021-22','2022-23','2023-24','2024-25','2025-26','2026-27'].map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </div>
+              <div className="field">
+                <label className="label">Standard</label>
+                <input className="input" value={editingStudent.standard} onChange={(e) => setEditingStudent({...editingStudent, standard: e.target.value})} />
+              </div>
+              <div className="field">
+                <label className="label">City</label>
+                <input className="input" value={editingStudent.city} onChange={(e) => setEditingStudent({...editingStudent, city: e.target.value})} />
+              </div>
+
+              {/* Photo Upload Field */}
+              <div className="field" style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
+                <label className="label">Profile Photo (Optional)</label>
+                <input 
+                  type="file" 
+                  accept="image/*"
+                  className="input" 
+                  style={{ paddingTop: '9px' }}
+                  onChange={(e) => setEditPhotoFile(e.target.files[0])} 
+                />
+                {editingStudent.photoUrl && !editPhotoFile && (
+                  <img src={editingStudent.photoUrl} alt="Current" className="current-photo-preview" />
+                )}
+                {editPhotoFile && (
+                  <div style={{ fontSize: '12px', color: 'var(--green)', marginTop: '4px', fontWeight: 'bold' }}>
+                    New photo selected. Will be uploaded on save.
+                  </div>
+                )}
+              </div>
+
+              <button className="primary-button submit-btn-full" type="submit" disabled={isUpdating}>
+                {isUpdating ? 'Saving Updates...' : 'Save Changes'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* === Assign Modal Overlay === */}
+      {isAssignModalOpen && (
+        <div className="edit-modal-overlay">
+          <div className="edit-modal">
+            <div className="edit-modal-header">
+              <h2>Assign {selectedStudents.length} Calls</h2>
+              <button className="close-modal-btn" onClick={() => setIsAssignModalOpen(false)}>✕</button>
+            </div>
+
+            <form className="form-grid-compact" onSubmit={handleAssignCalls}>
+              <div className="field" style={{ gridColumn: '1 / -1' }}>
+                <label className="label">Task / Campaign Name</label>
+                <input 
+                  className="input" 
+                  value={assignData.eventTitle} 
+                  onChange={(e) => setAssignData({...assignData, eventTitle: e.target.value})} 
+                  placeholder="e.g., Fees Reminder" 
+                  required 
+                />
+              </div>
+              <div className="field">
+                <label className="label">Caller Name</label>
+                <input 
+                  className="input" 
+                  value={assignData.callerName} 
+                  onChange={(e) => setAssignData({...assignData, callerName: e.target.value})} 
+                  placeholder="e.g., Aryan" 
+                  required 
+                />
+              </div>
+              <div className="field">
+                <label className="label">Caller Email (Login ID)</label>
+                <input 
+                  className="input" 
+                  type="email"
+                  value={assignData.callerEmail} 
+                  onChange={(e) => setAssignData({...assignData, callerEmail: e.target.value})} 
+                  placeholder="aryan@gmail.com" 
+                  required 
+                />
+              </div>
+
+              <button className="primary-button submit-btn-full" type="submit" style={{ marginTop: '14px' }}>
+                Assign to Caller
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

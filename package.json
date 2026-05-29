@@ -3,21 +3,21 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "homepage": "https://krins583.github.io/call_app",
+  "homepage": "https://krins583.gi  thub.io/call_app",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "predeploy": "npm run build",
-  "deploy": "gh-pages -d dist",
-  "start": "react-scripts start"
-
+    "deploy": "gh-pages -d dist",
+    "start": "react-scripts start"
   },
   "dependencies": {
     "firebase": "^12.13.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
+    "react-router-dom": "^7.16.0",
     "recharts": "^3.8.1",
     "xlsx": "^0.18.5"
   },
