@@ -62,6 +62,7 @@ const Users = () => {
         await addDoc(collection(db, 'app_users'), {
           ...formData,
           isActive: true, 
+          forceLogout: false, // Default is false
           createdAt: serverTimestamp(),
         });
       }
@@ -107,6 +108,21 @@ const Users = () => {
         alert("Password successfully reset ho gaya!");
       } catch (err) {
         alert("Error resetting password: " + err.message);
+      }
+    }
+  };
+
+  // NAYA: Force Logout Function
+  const handleForceLogout = async (id, name) => {
+    if (window.confirm(`Are you sure you want to forcefully logout ${name} from all devices?`)) {
+      try {
+        await updateDoc(doc(db, 'app_users', id), {
+          forceLogout: true, // App/Flutter needs to listen to this field
+          lastForcedLogoutAt: serverTimestamp()
+        });
+        alert(`${name} has been forcefully logged out!`);
+      } catch (err) {
+        alert("Error forcing logout: " + err.message);
       }
     }
   };
@@ -263,6 +279,8 @@ const Users = () => {
                   </button>
 
                   <div className="action-buttons premium-actions">
+                    {/* NAYA: Force Logout Button (Door Icon) */}
+                    <button className="action-icon-btn logout-btn" onClick={() => handleForceLogout(user.id, user.firstName)} title="Force Logout from all devices">🚪</button>
                     <button className="action-icon-btn reset-btn" onClick={() => handleResetPassword(user.id)} title="Reset Password">🔑</button>
                     <button className="action-icon-btn edit-btn" onClick={() => handleEdit(user)} title="Edit">✏️</button>
                     <button className="action-icon-btn delete-btn" onClick={() => handleDelete(user.id)} title="Delete">🗑️</button>

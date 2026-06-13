@@ -102,14 +102,16 @@ const Dashboard = () => {
         let successCount = 0;
 
         for (const row of jsonData) {
-          const name = row.Name || row.name || row.NAME;
-          const phone = row.Phone || row.phone || row.PHONE;
+          // NAYA: Sabko optional kar diya hai aur default blank ('') set kar diya hai
+          const name = row.Name || row.name || row.NAME || '';
+          const phone = row.Phone || row.phone || row.PHONE || '';
           const dob = row.DOB || row.dob || row.Dob || '';
           const batch = row.Batch || row.batch || row.BATCH || '';
           const standard = row.Standard || row.standard || row.Std || row.STANDARD || '';
           const city = row.City || row.city || row.CITY || '';
 
-          if (name && phone) {
+          // NAYA: Agar inme se koi ek bhi field mein data hai (yani row puri khali nahi hai), toh save kar lo
+          if (name || phone || dob || batch || standard || city) {
             await addDoc(collection(db, 'students'), {
               name: String(name),
               phone: String(phone),
@@ -123,7 +125,7 @@ const Dashboard = () => {
             successCount++;
           }
         }
-        alert(`${successCount} students successfully uploaded.`);
+        alert(`${successCount} records successfully uploaded.`);
       } catch (error) {
         alert('Excel file parse karne mein error aayi.');
       } finally {
