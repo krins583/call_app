@@ -36,6 +36,8 @@ const Dashboard = () => {
   // Search, Filter, Sort & Pagination States
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('All'); 
+  const [filterBatch, setFilterBatch] = useState('All'); // NAYA: Batch Filter
+  const [filterMonth, setFilterMonth] = useState('All'); // NAYA: Month Filter
   const [sortBy, setSortBy] = useState('nameAsc'); 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
@@ -69,6 +71,11 @@ const Dashboard = () => {
     };
   }, []);
 
+  // NAYA: Jab bhi filter change ho, selections clear kar do taaki galat delete na ho
+  useEffect(() => {
+    setSelectedStudents([]);
+  }, [search, filterStatus, filterBatch, filterMonth]);
+
   const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light');
 
   const handleAddStudent = async (e) => {
@@ -88,7 +95,7 @@ const Dashboard = () => {
     }
   };
 
-  const handleFileUpload = async (e) => {
+ const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     setIsUploading(true);
@@ -98,19 +105,25 @@ const Dashboard = () => {
         const data = new Uint8Array(event.target.result);
         const workbook = XLSX.read(data, { type: 'array' });
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
+        const jsonData = XLSX.utils.sheet_to_json(worksheet); 
         let successCount = 0;
 
         for (const row of jsonData) {
-          // NAYA: Sabko optional kar diya hai aur default blank ('') set kar diya hai
           const name = row.Name || row.name || row.NAME || '';
-          const phone = row.Phone || row.phone || row.PHONE || '';
-          const dob = row.DOB || row.dob || row.Dob || '';
+          const phone = row.Phone || row.phone || row.PHONE || row.Contact || row.contact || '';
+          let dob = row.DOB || row.dob || row.Dob || '';
           const batch = row.Batch || row.batch || row.BATCH || '';
           const standard = row.Standard || row.standard || row.Std || row.STANDARD || '';
           const city = row.City || row.city || row.CITY || '';
 
-          // NAYA: Agar inme se koi ek bhi field mein data hai (yani row puri khali nahi hai), toh save kar lo
+          if (typeof dob === 'number') {
+            const jsDate = new Date((dob - 25569) * 86400 * 1000);
+            const yyyy = jsDate.getFullYear();
+            const mm = String(jsDate.getMonth() + 1).padStart(2, '0');
+            const dd = String(jsDate.getDate()).padStart(2, '0');
+            dob = `${yyyy}-${mm}-${dd}`;
+          }
+
           if (name || phone || dob || batch || standard || city) {
             await addDoc(collection(db, 'students'), {
               name: String(name),
@@ -127,7 +140,7 @@ const Dashboard = () => {
         }
         alert(`${successCount} records successfully uploaded.`);
       } catch (error) {
-        alert('Excel file parse karne mein error aayi.');
+        alert('Excel file parse karne mein error aayi: ' + error.message);
       } finally {
         setIsUploading(false);
         e.target.value = null;
@@ -138,10 +151,13 @@ const Dashboard = () => {
 
   const handleBulkDelete = async () => {
     if (!window.confirm(`Are you sure you want to delete ${selectedStudents.length} students?`)) return;
-    for (let id of selectedStudents) {
-      await deleteDoc(doc(db, 'students', id));
+    try {
+      // Bulk Delete fast karne ke liye Promise.all
+      await Promise.all(selectedStudents.map(id => deleteDoc(doc(db, 'students', id))));
+      setSelectedStudents([]);
+    } catch (err) {
+      alert('Delete error: ' + err.message);
     }
-    setSelectedStudents([]);
   };
 
   const toggleSelectStudent = (id) => {
@@ -152,7 +168,6 @@ const Dashboard = () => {
     }
   };
 
-  // === Handle Bulk Assign ===
   const handleAssignCalls = async (e) => {
     e.preventDefault();
     if (!assignData.callerEmail || !assignData.callerName) {
@@ -190,23 +205,17 @@ const Dashboard = () => {
     }
   };
 
-  // === Photo Upload to ImgBB ===
   const uploadPhotoToImgBB = async (file) => {
     const form = new FormData();
     form.append('image', file);
-    
-    // Apni API key use karein
     const IMGBB_API_KEY = import.meta.env.VITE_IMGBB_API_KEY; 
-    
     try {
       const res = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
         method: 'POST',
         body: form,
       });
       const data = await res.json();
-      if (data.success) {
-        return data.data.url;
-      }
+      if (data.success) return data.data.url;
       return null;
     } catch (err) {
       console.error('ImgBB Upload Error:', err);
@@ -214,7 +223,6 @@ const Dashboard = () => {
     }
   };
 
-  // === Handle Update Profile ===
   const handleUpdateStudent = async (e) => {
     e.preventDefault();
     setIsUpdating(true);
@@ -250,10 +258,22 @@ const Dashboard = () => {
     }
   };
 
-  // === DATA PROCESSING ===
+  // === DATA PROCESSING & FILTERS ===
   let processedList = allStudents.filter((s) => (s.name || '').toLowerCase().includes(search.toLowerCase()));
   if (filterStatus === 'Pending') processedList = processedList.filter(s => !s.isCallDone);
   if (filterStatus === 'Completed') processedList = processedList.filter(s => s.isCallDone);
+
+  // NAYA: Batch Filter Logic
+  if (filterBatch !== 'All') processedList = processedList.filter(s => s.batch === filterBatch);
+  
+  // NAYA: Month Filter Logic
+  if (filterMonth !== 'All') {
+    processedList = processedList.filter(s => {
+      if (!s.dob || !s.dob.includes('-')) return false;
+      const month = s.dob.split('-')[1]; // YYYY-MM-DD format se mahina (MM) nikalna
+      return month === filterMonth;
+    });
+  }
 
   processedList.sort((a, b) => {
     if (sortBy === 'nameAsc') return (a.name || '').localeCompare(b.name || '');
@@ -261,6 +281,18 @@ const Dashboard = () => {
     if (sortBy === 'newFirst') return (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0);
     return 0;
   });
+
+  // NAYA: Select All Functionality
+  const isAllSelected = processedList.length > 0 && selectedStudents.length === processedList.length;
+  const handleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedStudents([]);
+    } else {
+      setSelectedStudents(processedList.map(s => s.id));
+    }
+  };
+
+  const uniqueBatches = [...new Set(allStudents.map(s => s.batch).filter(Boolean))].sort();
 
   const totalPages = Math.ceil(processedList.length / itemsPerPage);
   const currentItems = processedList.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -378,15 +410,54 @@ const Dashboard = () => {
                 </div>
               </div>
 
-              <div className="advanced-toolbar">
-                <div className="section-label">Directory List</div>
-                <div className="toolbar-controls">
+              <div className="advanced-toolbar" style={{ flexWrap: 'wrap' }}>
+                <div className="section-label" style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                  Directory List
+                  
+                  {/* NAYA: Select All Filtered Checkbox */}
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', color: 'var(--primary)' }}>
+                    <input 
+                      type="checkbox" 
+                      className="custom-checkbox" 
+                      checked={isAllSelected}
+                      onChange={handleSelectAll}
+                    />
+                    Select All Filtered
+                  </label>
+                </div>
+                
+                <div className="toolbar-controls" style={{ flexWrap: 'wrap' }}>
                   <input className="input search-input" placeholder="Search by name..." value={search} onChange={(e) => {setSearch(e.target.value); setCurrentPage(1);}} />
+                  
+                  {/* NAYA: Batch Filter Dropdown */}
+                  <select className="input filter-select" value={filterBatch} onChange={(e) => {setFilterBatch(e.target.value); setCurrentPage(1);}}>
+                    <option value="All">All Batches</option>
+                    {uniqueBatches.map(b => <option key={b} value={b}>{b}</option>)}
+                  </select>
+
+                  {/* NAYA: Birthday Month Dropdown */}
+                  <select className="input filter-select" value={filterMonth} onChange={(e) => {setFilterMonth(e.target.value); setCurrentPage(1);}}>
+                    <option value="All">All Birthdays</option>
+                    <option value="01">January</option>
+                    <option value="02">February</option>
+                    <option value="03">March</option>
+                    <option value="04">April</option>
+                    <option value="05">May</option>
+                    <option value="06">June</option>
+                    <option value="07">July</option>
+                    <option value="08">August</option>
+                    <option value="09">September</option>
+                    <option value="10">October</option>
+                    <option value="11">November</option>
+                    <option value="12">December</option>
+                  </select>
+
                   <select className="input filter-select" value={filterStatus} onChange={(e) => {setFilterStatus(e.target.value); setCurrentPage(1);}}>
                     <option value="All">All Status</option>
                     <option value="Pending">Pending Calls</option>
                     <option value="Completed">Completed Calls</option>
                   </select>
+                  
                   <select className="input sort-select" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
                     <option value="nameAsc">Name (A-Z)</option>
                     <option value="nameDesc">Name (Z-A)</option>
@@ -455,8 +526,7 @@ const Dashboard = () => {
                           className="icon-edit-button" 
                           style={{ background: '#FFF4E5', color: '#F79009' }}
                           onClick={() => {
-                            // NAYA: URL ke beech mein /#/ add kiya gaya hai
-const link = `${window.location.origin}/call_app/#/update-profile?id=${s.id}`;
+                            const link = `${window.location.origin}/call_app/#/update-profile?id=${s.id}`;
                             navigator.clipboard.writeText(link);
                             alert('Link copied! Ab aap isko WhatsApp par send kar sakte hain.');
                           }} 
